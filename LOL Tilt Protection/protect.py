@@ -1,80 +1,92 @@
-from riotwatcher import LolWatcher, ApiError
-import pandas as pd
-import psutil
+# imports 
+from riotwatcher import LolWatcher, ApiError #for GET requests to Riot/Leauge API, #ApiError not used
+# import pandas as pd # not in use
+import psutil # for monitoring and closing the leauge client 
+import time # for checking the timel
 
-# TODO check date played of matches
-# TODO handle cases where there are not ranked matches
+# TODO: Test everything! So far nothing has been tested:(
 # TODO loop and periodically check matches in the background
 
-# golbal variables
+#Hardcoded variables 
 api_key = 'KEY'
 watcher = LolWatcher(api_key)
+
+#Global Variables
 my_region = 'na1'
+time_of_last_loss = 0
+timeout_end = 0
 
 # summoner details
-me = watcher.summoner.by_name(my_region, 'Fio')
+s_name = 'Fio'
+me = watcher.summoner.by_name(my_region, s_name)
 #print(me)
 
-print("\n---Ranked---\n")
+# def check_last_two_ranked_games(s_name: str) -> List[dict]:
+def get_last_two_ranked_games(s_name):
+    # Get recent match history 
+    matches = watcher.match.matchlist_by_account(my_region, me['accountId'])
+    
+    last_matches = []
+    
+    #Run through the last 50 matches,
+    #Create list containing last two Ranked matches 
+    match_counter = 0
+    for match in matches['matches']: 
+        match_counter +=1
+        
+        if match['queue'] == 420: #Check that match is ranked (queue type is 420)
+            last_matches.append(match)
+            
+        if len(last_matches) > 1 or (match_counter > 50): 
+            break
+            
+    return last_matches                  
+    
+def check_if_lost(match_list):
+    '''
+    Takes a list of matches as input
+    Finds the details of thoes matches and
+    checks if the user/Summoner has lost thoes games
+    '''
+    global my_region
+    global watcher
+    lost_games = []
 
-ranked_stats = watcher.league.by_summoner(my_region, me['id'])
-print(ranked_stats)
+    match_details = []
+    for match in match_list:
+        match_details.append(watcher.match.by_id(my_region, match['gameId']))
+    
+    for match_detail_dict, match in zip(match_details, match_list):
+        for participant in match_detail_dict['participants']:
+            if participant['championId'] == match['champion']:
+                if not participant['stats']['win']:
+                    lost_games.append(
+                        {'gameId': match['gameId'],
+                         'timestamp':match['timestamp']})
+                    
+#     return [lost_games, match_details]      
+    return lost_games
 
-print("\n---Matches---\n")
+def tilt_check(lost_games):
+    # if user has lost 2 ranked games within 2 hours
+    # the league client will be killed and forced closed for 2 hours.
+   
+    if not len(lost_games) > 1:
+        return
+    
+    time_between_games = abs(lost_games[0]['timestamp'] - lost_games[1]['timestamp'])
+    
+    if (time.time()-lost_games[0]['timestamp'] < 7200) \
+    and (time_between_games < 7200): 
+        # if time between games is less than 2hrs and last game was less than 2hrs ago,
+        # kill client
+        timeout_end = lost_games[0]['timestamp'] + 7200
+        while time.time() < timeout_end:
+            kill_leauge()
+            time.sleep(60)
 
-# get details of most recent matches
-matches = watcher.match.matchlist_by_account(my_region, me['accountId'])
-
-last_match = []
-second_last_match = []
-matchesFound = 0
-
-# last two matches played
-for match in matches['matches']:
-    # find ranked matches only (queue = 420)
-    if(match['queue'] == 420 and matchesFound == 0):
-        last_match = match
-        matchesFound += 1
-
-    elif(match['queue'] == 420 and matchesFound == 1):
-        second_last_match = match
-        break
-
-# get champion details of each match
-# this will get data for all players
-match_detail = watcher.match.by_id(my_region, last_match['gameId'])
-match_detail2 = watcher.match.by_id(my_region, second_last_match['gameId'])
-
-losses = 0
-matchData = []
-matchData2 = []
-# check if first game won
-# loop through all players until we find the player we are seaching for
-for row in match_detail['participants']:
-    if(row['championId'] == last_match["champion"]):
-        matchData = row
-        if(not row['stats']["win"]):
-            losses += 1
-
-# check if second game won
-for row in match_detail2['participants']:
-    if(row['championId'] == second_last_match["champion"]):
-        matchData2 = row
-        if(not row['stats']["win"]):
-            losses += 1
-
-# if the player lost 2 ranked games in a row, they cannot play league anymore
-if(losses == 2):
-    print('Lost two games in a row')
-
-    # close the league Client
+def kill_leauge():
     for process in psutil.process_iter():
-        if process.name() == "LeagueClient.exe":
+        if process.name() == "LeaugeClient.exe":
             process.kill()
-else:
-    print('You can keep playing')
-
-print('\n')
-print(matchData)
-print('\n')
-print(matchData2)
+            
